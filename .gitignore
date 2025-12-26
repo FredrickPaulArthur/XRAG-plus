@@ -216,3 +216,5 @@ data/
 
 # Logs for reference
 LOGS.txt
+
+chromadb_persist/
