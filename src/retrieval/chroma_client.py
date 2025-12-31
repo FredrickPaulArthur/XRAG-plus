@@ -1,12 +1,10 @@
-### File: src/retrieval/chroma_client.py
 """
-ChromaManager: helper around chromadb Client and collections.
-It handles creating collections, persisting, and simple queries.
+ChromaManager: helper around chromadb Client and collections. It handles creating collections, persisting, and simple queries.
 """
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import chromadb
-from chromadb.config import Settings as ChromaSettings
+from chromadb.config import Settings
 import os
 
 
@@ -33,6 +31,14 @@ class ChromaManager:
         client = self._ensure_client()
         return client.get_collection(name)
 
-    def list_collections(self):
+    def list_collections(self, name_startswith: Optional[str] = None) -> List[str]:
         client = self._ensure_client()
-        return [c["name"] for c in client.list_collections()]
+        collections = client.list_collections()
+        if name_startswith:
+            prefix = name_startswith.lower()
+            return [
+                c.name for c in collections
+                if c.name.lower().startswith(prefix)
+            ]
+
+        return [c.name for c in collections]
