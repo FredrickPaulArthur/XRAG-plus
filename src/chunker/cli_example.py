@@ -14,7 +14,6 @@ from src.chunker import (
     SlidingWindowChunker,
     SentenceChunker,
     ParagraphChunker,
-    semantic_chunking,
     context_aware_chunking
 )
 from src.chunker.config import Settings
@@ -24,6 +23,8 @@ from src.chunker.utils import print_chunks
 DOCUMENT = {
     "doc_id": "example-doc-002",
     "title": "Example Doc 002",
+    "language": "en", 
+    "source": "example",
     "text": (
         "Artificial intelligence (AI) is the simulation of human intelligence processes by machines. "
         "It enables computers to perform tasks that normally require human cognition, such as visual perception, speech recognition, and decision-making.\n\n"
@@ -42,8 +43,7 @@ DOCUMENT = {
 
         "Climate change impacts ecosystems, human health, and global economies. "
         "Mitigation strategies include carbon capture, reforestation, and transitioning to low-carbon energy sources."
-    ),
-    "meta": {"language": "en", "source": "example"},
+    )
 }
 
 
@@ -77,10 +77,8 @@ if __name__ == "__main__":
     paragraph_chunks = paragraph_chunker.chunk(DOCUMENT)
     print_chunks("ParagraphChunker", paragraph_chunks)
 
-
     # Context-aware chunking
     max_chars = 900
-
     ctx = context_aware_chunking(DOCUMENT, max_chars=max_chars, overlap_sentences=1)
     if not ctx:
         print("No context-aware chunks returned.")

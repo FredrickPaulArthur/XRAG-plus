@@ -7,6 +7,8 @@ Includes:
 - SlidingWindowChunker
 - SentenceChunker
 - ParagraphChunker
+- context_aware_chunking
+- llm_based_chunking
 """
 from __future__ import annotations
 import uuid
@@ -130,9 +132,9 @@ class TokenChunker(BaseChunker):
     def chunk(self, doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         doc_id = doc.get("doc_id") or str(uuid.uuid4())
         text = doc.get("text", "")
-        meta = doc.get("meta", {})
+        # meta = doc.get("meta", {})
 
-        lang = meta.get("language")
+        lang = doc.get("language")
 
         tokens, spans = self._tokenize(text)
         total = len(tokens)
@@ -140,6 +142,7 @@ class TokenChunker(BaseChunker):
             return []
 
         chunks: List[Dict[str, Any]] = []
+        metadatas = []
         index = 0
         while index < total:
             end = min(index + self.chunk_size, total)
@@ -156,25 +159,23 @@ class TokenChunker(BaseChunker):
                 start_char = -1
                 end_char = -1
 
-            chunk = {
+            chunks.append(chunk_text)
+            metadatas.append({
                 "doc_id": doc_id,
                 "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
-                "text": chunk_text,
                 "start_char": start_char,
                 "end_char": end_char,
                 "token_count": len(chunk_tokens),
                 "chunk_type": self.chunk_type,
-                "language": meta.get("language"),
-                "meta": meta,
-            }
-            chunks.append(chunk)
+                "language": lang,
+            })
 
             if self.stride <= 0:
                 index = end
             else:
                 index = index + self.chunk_size - self.stride
 
-        return chunks
+        return list(zip(chunks, metadatas))
 
 
 
@@ -266,12 +267,11 @@ class SentenceChunker(BaseChunker):
     def chunk(self, doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         doc_id = doc.get("doc_id") or str(uuid.uuid4())
         text = doc.get("text", "")
-        meta = doc.get("meta", {})
-
-        lang = meta.get("language")
+        lang = doc.get("language")
 
         parts = [p.strip() for p in re.split(_SENTENCE_SPLIT_RE, text) if p and p.strip()]
         chunks: List[Dict[str, Any]] = []
+        metadatas = []
 
         i = 0
         merged_idx = 0
@@ -291,22 +291,22 @@ class SentenceChunker(BaseChunker):
             else:
                 end = start + len(curr)
 
-            chunk = {
+            chunks.append(curr)
+
+            metadatas.append({
                 "doc_id": doc_id,
-                "chunk_id": make_chunk_id(doc_id, merged_idx, lang),
-                "text": curr,
+                "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
                 "start_char": start,
                 "end_char": end,
                 "token_count": token_count,
                 "chunk_type": self.chunk_type,
                 "language": lang,
-                "meta": meta,
-            }
-            chunks.append(chunk)
+            })
+
             merged_idx += 1
             i = j
 
-        return chunks
+        return list(zip(chunks, metadatas))
 
 
 
@@ -347,12 +347,11 @@ class ParagraphChunker(BaseChunker):
     def chunk(self, doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         doc_id = doc.get("doc_id") or str(uuid.uuid4())
         text = doc.get("text", "")
-        meta = doc.get("meta", {})
-
-        lang = meta.get("language")
+        lang = doc.get("language")
 
         parts = [p.strip() for p in re.split(_PARAGRAPH_SPLIT_RE, text) if p and p.strip()]
         chunks: List[Dict[str, Any]] = []
+        metadatas = []
         i = 0
         idx = 0
         while i < len(parts):
@@ -369,22 +368,20 @@ class ParagraphChunker(BaseChunker):
             else:
                 end = start + len(curr)
 
-            chunk = {
+            chunks.append(curr)
+            metadatas.append({
                 "doc_id": doc_id,
-                "chunk_id": make_chunk_id(doc_id, idx, lang),
-                "text": curr,
+                "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
                 "start_char": start,
                 "end_char": end,
                 "token_count": len(whitespace_tokens(curr)),
                 "chunk_type": self.chunk_type,
                 "language": lang,
-                "meta": meta,
-            }
-            chunks.append(chunk)
+            })
             idx += 1
             i = j
 
-        return chunks
+        return list(zip(chunks, metadatas))
 
 
 
@@ -412,7 +409,7 @@ def semantic_chunking(text, model, provider, threshold=0.8):
 
 
 def llm_based_chunking(text, model_name):
-    """Loads the Mistral model from Hugging Face or another source"""
+    """Loads the Mistral model from Hugging Face or another source. Just kept as a Prototype, NOT TO BE USED."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     model_name = "mistral"  # Only using mistral now, ubstitute this with the actual name if different
@@ -471,9 +468,9 @@ def context_aware_chunking(doc: str, max_chars: int = 1000, overlap_sentences: i
 
     Returns
     -------
-    List[Tuple[str, dict]]
-        A list of (chunk_text, metadata) tuples. Metadata contains at least
-        {'context_title': title}.
+    chunks : List[Tuple[str, dict]] A list of (chunk_text, metadata) tuples. 
+    
+    metadata : Dict contains at least {'context_title': title}.
     """
     text = doc["text"]
     title = doc["title"]
@@ -520,16 +517,16 @@ def context_aware_chunking(doc: str, max_chars: int = 1000, overlap_sentences: i
                 current = current[-overlap_sentences:] if overlap_sentences > 0 else []
                 continue
             else:
-                # sentence itself too large → force split
+                # If sentence itself too large → force split
                 chunks.append(sent[:max_chars])
                 metadatas.append({"context_title": title})
                 sentences[i] = sent[max_chars:]
                 continue
-        else:   # Add normally
+        else:   # Adds normally
             current.append(sent)
             i += 1
 
-    # Add last chunk
+    # Adds last chunk
     if current:
         chunks.append(join_current())
         metadatas.append({"context_title": title})

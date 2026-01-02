@@ -51,12 +51,13 @@ def whitespace_tokens(text: str) -> List[str]:
 
 
 
-def print_chunks(title: str, chunks: List[Dict[str, Any]]):
+def print_chunks(title: str, chunks: List[Tuple[str, Dict[str, Any]]]):
     """Pretty Print Chunks"""
     print(f"\n\n\n=== {title} ===")
     for c in chunks:
+        # print(c[1])   # 0 - text, 1 - metadatas
         print(
-            f"\n{c['chunk_id']} | tokens={c['token_count']} | "
-            f"chars=({c['start_char']},{c['end_char']})\n"
-            f"  TEXT: {c['text'][:]}"
+            f"\n{c[1]['chunk_id']} | tokens={c[1]['token_count']} | "
+            f"chars=({c[1]['start_char']},{c[1]['end_char']})\n"
+            f"  TEXT: {c[0]}"
         )

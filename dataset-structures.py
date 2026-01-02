@@ -1,3 +1,19 @@
+# All Data must look this format
+# Need to convert "text" to string format
+data_format = {
+    "doc_id": "books_de_1",
+    "language": "de",
+    "source": "books",
+    "title": "Künstliche Intelligenz",
+    "text": (
+        "Künstliche Intelligenz ist ein Teilgebiet der Informatik, das sich "
+        "mit der Automatisierung intelligenten Verhaltens befasst.\n\n" * 15
+    ),
+    "url": "https://books.example.com/ki"
+}
+
+
+
 # The Dataset look like this for MLQA
 # location - .\data\mlqa\dev\dev-context-ar-question-ar.json
 mlqa = {
