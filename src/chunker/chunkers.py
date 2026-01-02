@@ -9,11 +9,8 @@ Includes:
 - ParagraphChunker
 """
 from __future__ import annotations
-
-import re
 import uuid
 from typing import List, Dict, Any, Optional, Tuple, Callable
-
 
 from .utils import (
     make_chunk_id,
@@ -212,15 +209,12 @@ class SlidingWindowChunker(TokenChunker):
 
 
 
-
+import re
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|(?<=\n)\s*")
 
 class SentenceChunker(BaseChunker):
     """
     Sentence-level chunker with short-sentence merging.
-
-    Behavior
-    --------
     - Uses a sentence-splitting regex to find sentence boundaries.
     - Optionally merges adjacent sentences until a minimum token count (`min_tokens`)
       is achieved. This prevents many very-short single-sentence chunks.
@@ -318,7 +312,7 @@ class SentenceChunker(BaseChunker):
 
 
 
-
+import re
 _PARAGRAPH_SPLIT_RE = re.compile(r"(?:\r?\n){2,}|</p>|<br\s*/?>", flags=re.IGNORECASE)
 
 class ParagraphChunker(BaseChunker):
@@ -391,3 +385,153 @@ class ParagraphChunker(BaseChunker):
             i = j
 
         return chunks
+
+
+
+
+def semantic_chunking(text, model, provider, threshold=0.8):
+    """
+        Minimum unit is a Sentence. More than 1 sentences are added in the same chunk if they have similar meaning.
+    """
+    import re
+    from sklearn.metrics.pairwise import cosine_similarity
+    sentences = re.split(r'(?<=[.!?]) +', text)    # Split by sentence
+
+    if provider == "sentence_transformers":
+        from src.indexing.embeddings import SentenceTransformersProvider
+        embeddings = [SentenceTransformersProvider(model).embed_documents(sentences)]
+    elif provider == "cohere":
+        from src.indexing.embeddings import CohereAIEmbeddingProvider
+        embeddings = [CohereAIEmbeddingProvider(model).embed_documents(sentences)]
+    elif provider == "openai":
+        from src.indexing.embeddings import OpenAIEmbeddingProvider
+        embeddings = [OpenAIEmbeddingProvider(model).embed_documents(sentences)]
+
+
+
+
+
+def llm_based_chunking(text, model_name):
+    """Loads the Mistral model from Hugging Face or another source"""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    model_name = "mistral"  # Only using mistral now, ubstitute this with the actual name if different
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+
+    import re
+    sentences = re.split(r'(?<=[.!?]) +', text)  # Split by sentence
+    chunks = []
+    
+    # Feed sentences or chunks to the Mistral model for dynamic chunking
+    for i in range(0, len(sentences), 5):  # Process in small batches for better results
+        batch_sentences = " ".join(sentences[i:i + 5])
+        input_ids = tokenizer.encode(batch_sentences, return_tensors='pt')
+        
+        # Get model response - you can modify the prompt according to the task
+        output = model.generate(input_ids, max_length=500, num_return_sequences=1)
+        decoded_output = tokenizer.decode(output[0], skip_special_tokens=True)
+        
+        # Use model's response to chunk (e.g., summarized chunk)
+        chunks.append(decoded_output.strip())
+
+    return chunks
+
+
+
+def context_aware_chunking(doc: str, max_chars: int = 1000, overlap_sentences: int = 1):
+    """
+    Structure-based not Semantic.
+    ----------------------------
+    Creates context-aware chunks that respect paragraph and sentence boundaries
+    while ensuring a maximum character budget per chunk (approximate).
+
+    - Split the document into paragraphs (double newlines or similar).
+    - For each paragraph, split into sentences using a lightweight heuristic.
+    - Accumulate sentences into `current` until adding another sentence would
+      exceed `max_chars`. When limit is hit:
+        - Emit the current chunk (with metadata)
+        - Optionally keep `overlap_sentences` at the end of the current chunk
+          to add as the start of the next chunk (sliding overlap).
+    - Edge cases:
+        * If a single sentence is longer than `max_chars`, force-split the sentence
+          into a substring of length `max_chars` and continue with the remainder.
+        * The function returns a list of pairs: (chunk_text, metadata dict)
+
+    Parameters
+    ----------
+    doc : dict-like
+        Expected to be a mapping with keys:
+          - 'text': str (document body)
+          - 'title': str (used to fill metadata)
+    max_chars : int
+        Maximum number of characters per output chunk (soft cap).
+    overlap_sentences : int
+        Number of sentences to keep as overlap between consecutive chunks.
+
+    Returns
+    -------
+    List[Tuple[str, dict]]
+        A list of (chunk_text, metadata) tuples. Metadata contains at least
+        {'context_title': title}.
+    """
+    text = doc["text"]
+    title = doc["title"]
+
+    if not text:
+        return [], []
+
+    import re
+    # --- 1. Paragraph split ---
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+
+    # --- 2. Sentence split (simple heuristic) ---
+    def split_sentences(p):
+        pattern = r'(?<=[\.\!\?])\s+(?=[A-Z0-9"])'
+        sents = re.split(pattern, p)
+        return [s.strip() for s in sents if s.strip()]
+
+    sentences = []
+    for p in paragraphs:
+        s = split_sentences(p)
+        if not s:
+            s = [p]  # fallback
+        sentences.extend(s)
+
+    chunks = []
+    metadatas = []
+
+    current = []
+    i = 0
+    n = len(sentences)
+
+    def join_current():
+        return " ".join(current).strip()
+
+    while i < n:
+        sent = sentences[i]
+        candidate = (join_current() + " " + sent).strip() if current else sent
+
+        if len(candidate) > max_chars:  # If adding this sentence exceeds budget → finalize current chunk
+            if current:
+                chunks.append(join_current())
+                metadatas.append({"context_title": title})
+                # prepare next chunk with overlap
+                current = current[-overlap_sentences:] if overlap_sentences > 0 else []
+                continue
+            else:
+                # sentence itself too large → force split
+                chunks.append(sent[:max_chars])
+                metadatas.append({"context_title": title})
+                sentences[i] = sent[max_chars:]
+                continue
+        else:   # Add normally
+            current.append(sent)
+            i += 1
+
+    # Add last chunk
+    if current:
+        chunks.append(join_current())
+        metadatas.append({"context_title": title})
+
+    return list(zip(chunks, metadatas))

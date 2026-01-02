@@ -14,6 +14,8 @@ from src.chunker import (
     SlidingWindowChunker,
     SentenceChunker,
     ParagraphChunker,
+    semantic_chunking,
+    context_aware_chunking
 )
 from src.chunker.config import Settings
 from src.chunker.utils import print_chunks
@@ -21,6 +23,7 @@ from src.chunker.utils import print_chunks
 
 DOCUMENT = {
     "doc_id": "example-doc-002",
+    "title": "Example Doc 002",
     "text": (
         "Artificial intelligence (AI) is the simulation of human intelligence processes by machines. "
         "It enables computers to perform tasks that normally require human cognition, such as visual perception, speech recognition, and decision-making.\n\n"
@@ -75,4 +78,18 @@ if __name__ == "__main__":
     print_chunks("ParagraphChunker", paragraph_chunks)
 
 
-    # Next step would be to embed the Chunks and save it to the VectorDB.
+    # Context-aware chunking
+    max_chars = 900
+
+    ctx = context_aware_chunking(DOCUMENT, max_chars=max_chars, overlap_sentences=1)
+    if not ctx:
+        print("No context-aware chunks returned.")
+    else:
+        for idx, (chunk_text, meta) in enumerate(ctx):
+            print(f"\ncontext-chunk-{idx} | tokens≈{len(chunk_text.split()):d} | meta={meta}")
+            print("  ", chunk_text[:max_chars].replace("\n", " "))
+            print()
+
+
+    # Next step would be to embed the Chunks and save it to the VectorDB. Carried out in src.Indexing module.
+    # Semantic Chunking Implementation

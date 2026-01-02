@@ -1,10 +1,15 @@
 """XRAG+ Chunker package
 
-Expose the primary chunker implementations
+This package provides various chunking strategies to split documents into manageable pieces for further processing,
+such as embedding and indexing. It includes token-based, sliding window, sentence-based, paragraph-based, LLM-based,
+semantic, and context-aware chunking methods.
 """
 
 
-from .chunkers import BaseChunker, TokenChunker, SlidingWindowChunker, SentenceChunker, ParagraphChunker
+from src.chunker.chunkers import (
+    BaseChunker, TokenChunker, SlidingWindowChunker, SentenceChunker, ParagraphChunker, llm_based_chunking, 
+    semantic_chunking, context_aware_chunking
+)
 
 
 __all__ = [
@@ -12,5 +17,8 @@ __all__ = [
     "TokenChunker",
     "SlidingWindowChunker",
     "SentenceChunker",
-    "ParagraphChunker"
+    "ParagraphChunker",
+    "llm_based_chunking",
+    "semantic_chunking",
+    "context_aware_chunking"
 ]
