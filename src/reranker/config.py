@@ -15,8 +15,7 @@ from typing import Dict, Any
 @dataclass
 class Settings:
     CROSS_ENCODER_MODEL_PROVIDER = "sentence_transformers"
-    # CROSS_ENCODER_MODEL= "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    CROSS_ENCODER_MODEL= "jinaai/jina-reranker-v2-base-multilingual"
+    CROSS_ENCODER_MODEL= "jinaai/jina-reranker-v2-base-multilingual"    # cross-encoder/ms-marco-MiniLM-L-6-v2
     MONO_ENCODER_MODEL_PROVIDER = "sentence_transformers"
     MONO_ENCODER_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 
@@ -29,32 +28,6 @@ class Settings:
 
     # Whether to min-max normalize cross-encoder raw scores
     NORMALIZE_SCORES: bool = False
-
-    VERBOSE: bool = True
-
-    LANG_RERANKER_MAP = {
-        "en": {
-            "provider": "sentence_transformers",
-            "model": "cross-encoder/ms-marco-MiniLM-L6-v2",
-            "note": "English-optimized pairwise cross-encoder (optional)"
-        },
-        "es": {
-            "provider": "sentence_transformers", 
-            "model": "jinaai/jina-reranker-v3"
-        },
-        "de": {
-            "provider": "sentence_transformers", 
-            "model": "jinaai/jina-reranker-v3"
-        },
-        "hi": {
-            "provider": "sentence_transformers", 
-            "model": "jinaai/jina-reranker-v3"},
-        "ru": {
-            "provider": "sentence_transformers", 
-            "model": "jinaai/jina-reranker-v3"
-        }
-    }
-
 
     def to_dict(self) -> Dict[str, Any]:
         return {
