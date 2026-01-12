@@ -436,7 +436,7 @@ def llm_based_chunking(text, model_name):
 
 
 
-def context_aware_chunking(doc: str, max_chars: int = 1000, overlap_sentences: int = 1):
+def context_aware_chunking(doc: Dict[str, Any], max_chars: int, overlap_sentences: int):
     """
     Structure-based not Semantic.
     ----------------------------
