@@ -4,6 +4,7 @@ Embedding providers for XRAG+ indexing.
 - EmbeddingProvider: abstract class
 - SentenceTransformersProvider: uses sentence-transformers (local)
 - OpenAIEmbeddingProvider: uses OpenAI embeddings (optional)
+- CohereAIEmbeddingProvider: uses Cohere embeddings (optional)
 
 Each provider implements embed_documents(List[str]) -> List[List[float]].
 
@@ -15,7 +16,9 @@ Make sure optional deps are installed in your environment when using the provide
 from abc import ABC, abstractmethod
 from typing import List, Iterable, Optional
 import os
-import hashlib
+import torch, gc
+from sentence_transformers import SentenceTransformer
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -33,25 +36,44 @@ class EmbeddingProvider(ABC):
 
 
 class SentenceTransformersProvider(EmbeddingProvider):
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", device: Optional[str] = None):
-        try:
-            from sentence_transformers import SentenceTransformer
-        except Exception as e:
-            raise ImportError("sentence-transformers is required for SentenceTransformersProvider") from e
+    def __init__(self, model_name: str, device: Optional[str] = None, batch_size: int = 16):
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.model_name = model_name
         self.provider = "sentence_transformer"
         self.device = device
-        self.model = SentenceTransformer(model_name, device=device)
+        self.batch_size = batch_size
+
+        # load explicitly on CPU first to avoid OOM during initialization
+        self.model = SentenceTransformer(model_name, device="cpu")
+
+        if self.device != "cpu":
+            # try to reduce GPU memory pressure before moving
+            gc.collect()
+            torch.cuda.empty_cache()
+            try:
+                self.model.to(self.device)
+            except Exception:           # fallback to CPU if move fails
+                self.model.to("cpu")
+                self.device = "cpu"
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        embeddings = self.model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+        # Encodes in small batches and avoid passing device to encode() - model already loaded on device in __init__
+        embeddings = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
+            emb = self.model.encode(batch, show_progress_bar=False, convert_to_numpy=True)
+            embeddings.append(emb)
+        import numpy as np
+        embeddings = np.vstack(embeddings)
         return embeddings.tolist()
 
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """Uses api_key from .env if not explicitly specified"""
+    """Uses api_key from .env if not explicitly specified.
+    Batch size is specified inside the embed method for safety - OpenAI API has rate/size limits."""
     def __init__(self, model: str = "text-embedding-3-small", api_key: Optional[str] = None):
         try:
             import openai
@@ -60,6 +82,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         self.model = model
         self.provider = "openai"
+        self.batch_size = 32
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY must be set in environment or passed to provider")
@@ -68,10 +91,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         # Batching for safety — OpenAI API has rate/size limits.
-        batch_size = 32
         res = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
             r = self._openai.Embeddings.create(model=self.model, input=batch)
             vectors = [item["embedding"] for item in r["data"]]
             res.extend(vectors)
@@ -80,7 +102,11 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
 
 class CohereAIEmbeddingProvider(EmbeddingProvider):
-    """Uses api_key from .env if not explicitly specified"""
+    """
+    Uses api_key from .env if not explicitly specified
+    TODO:
+        To implement usage of input_type="search_document" for indexing and input_type="search_query" when embedding user queries.
+    """
     def __init__(self, model: str = "embed-multilingual-v3.0", api_key: str = None):
         try:
             import cohere
@@ -95,6 +121,7 @@ class CohereAIEmbeddingProvider(EmbeddingProvider):
         emb = self.co_client.embed(
             model=self.model,
             texts=texts,
-            input_type="search_document"   # default for RAG document storage
+            input_type="search_document",   # default for RAG document storage
+            batching=True
         ).embeddings     # /embed-multilingual-v3.0
         return emb

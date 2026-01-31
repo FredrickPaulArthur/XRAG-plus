@@ -22,79 +22,75 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
 
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+
+
 @dataclass
 class Settings:
-    # Chroma database persistence
     CHROMA_PERSIST_DIRECTORY: Optional[str] = field(default="./.chroma_db")
-
-    # Prefix applied to all collection names to keep your project's collections isolated.
     COLLECTION_PREFIX: str = "xrag_collection"
 
     DEFAULT_EMBEDDING_PROVIDER: str = "sentence_transformers"
-
     DEFAULT_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 
-    LANG_EMBEDDING_MAP = {
-        "en": {
-            "provider": "sentence_transformers",
-            "model": "all-MiniLM-L6-v2"
-        },
-        # "en": {
-        #     "provider": "cohere",
-        #     "model": "embed-multilingual-v3.0"
-        # },
-        "hi": {
-            "provider": "sentence_transformers",
-            "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        },
-        "ru": {
-            "provider": "sentence_transformers", 
-            "model": "paraphrase-multilingual-mpnet-base-v2"
-        },
-        "de": {
-            "provider": "sentence_transformers",
-            "model": "all-MiniLM-L6-v2"
-        },
-        "es": {
-            "provider": "sentence_transformers",
-            "model": "all-MiniLM-L6-v2"
-        },
-        # Using "default" value for any other languages
-        "default": {
-            "provider": "openai",
-            "model": "text-embedding-3-small"
+    LANG_EMBEDDING_MAP: Dict[str, Dict[str, str]] = field(
+        default_factory=lambda: {
+            "en": {
+                "provider": "sentence_transformers",
+                "model": "all-MiniLM-L6-v2",
+            },
+            # "en": {
+            #     "provider": "cohere",
+            #     "model": "embed-multilingual-v3.0"
+            # },
+            "hi": {
+                "provider": "sentence_transformers",
+                "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            },
+            "ru": {
+                "provider": "sentence_transformers",
+                "model": "paraphrase-multilingual-mpnet-base-v2",
+            },
+            "de": {
+                "provider": "sentence_transformers",
+                "model": "all-MiniLM-L6-v2",
+            },
+            "es": {
+                "provider": "sentence_transformers",
+                "model": "all-MiniLM-L6-v2",
+            },
+            "default": {
+                "provider": "openai",
+                "model": "text-embedding-3-small",
+            },
         }
-    }
+    )
 
 
-    # Max tokens per chunk (approx). The indexer converts to chars by APPROX_CHARS_PER_TOKEN.
-    CHUNK_MAX_CHARS = 512
-    CHUNK_OVERLAP_SENTENCES= 1
+    # Max tokens per chunk (approx).
+    CHUNK_MAX_CHARS: int = 1000
+    CHUNK_OVERLAP_SENTENCES: int = 2
 
     # -------------------------
     # Indexing runtime parameters
     # -------------------------
     # Textual items to send to the embedding provider per batch, for OPENAI API safe.
-    EMBEDDING_BATCH_SIZE: int = 32
+    # How many chunks to add/upsert to Chroma in a single operation (should be tuned with memory)
+    EMBEDDING_BATCH_SIZE: int = 64
 
-    # INDEX_BATCH_SIZE: int = 64  # How many chunks to add/upsert to Chroma in a single operation (should be tuned with memory)
+    DEDUP_ENABLED: bool = True  # Attempts deduplication before indexing (true recommended)
 
-    DEDUP_ENABLED: bool = True  # Whether to attempt deduplication before indexing (true recommended)
-
-    # Deduplication strategy:
-    #  - "checksum" : compute sha1 of chunk text and compare with collection metadata (simple)
-    #  - "external_db" : expects DEDUP_EXTERNAL_DB_URL configured and external store used
+    # Deduplication strategy - "checksum" : compute sha1 of chunk text and compare with collection metadata (simple)
     DEDUP_METHOD: str = "checksum"
 
-    # If using external DB for dedup, set connection/DSN here (optional)
-    DEDUP_EXTERNAL_DB_URL: Optional[str] = None
+    # TODO: To implement caching inside the same Directory.
+    # # Enable a simple on-disk cache of embeddings keyed by checksum to avoid re-embedding identical chunks
+    # EMBEDDING_CACHE_ENABLED: bool = True
+    # EMBEDDING_CACHE_DIR: str = "./chromadb_persist/embedding_cache"
 
-    # Enable a simple on-disk cache of embeddings keyed by checksum to avoid re-embedding identical chunks
-    EMBEDDING_CACHE_ENABLED: bool = True
-    EMBEDDING_CACHE_DIR: str = "./chromadb_persist/embedding_cache"
-
-    # Upsert behavior: try add(), if fails fallback to upsert()
-    UPSERT_ON_CONFLICT: bool = True
+    # # Upsert behavior: try add(), if fails fallback to upsert()
+    # UPSERT_ON_CONFLICT: bool = True
 
     # Verbosity / logging
     VERBOSE: bool = True
@@ -104,4 +100,21 @@ class Settings:
 
 
     def to_dict(self) -> Dict[str, Any]:
-        pass
+        return {
+            "CHROMA_PERSIST_DIRECTORY": self.CHROMA_PERSIST_DIRECTORY,
+            "COLLECTION_PREFIX": self.COLLECTION_PREFIX,
+            "DEFAULT_EMBEDDING_PROVIDER": self.DEFAULT_EMBEDDING_PROVIDER,
+            "DEFAULT_EMBEDDING_MODEL": self.DEFAULT_EMBEDDING_MODEL,
+            "LANG_EMBEDDING_MAP": self.LANG_EMBEDDING_MAP,
+            "CHUNK_MAX_CHARS": self.CHUNK_MAX_CHARS,
+            "CHUNK_OVERLAP_SENTENCES": self.CHUNK_OVERLAP_SENTENCES,
+            "EMBEDDING_BATCH_SIZE": self.EMBEDDING_BATCH_SIZE,
+            "DEDUP_ENABLED": self.DEDUP_ENABLED,
+            "DEDUP_METHOD": self.DEDUP_METHOD,
+            # "EMBEDDING_CACHE_ENABLED": self.EMBEDDING_CACHE_ENABLED,
+            # "EMBEDDING_CACHE_DIR": self.EMBEDDING_CACHE_DIR,
+            # "UPSERT_ON_CONFLICT": self.UPSERT_ON_CONFLICT,
+            "VERBOSE": self.VERBOSE,
+            "LOG_LEVEL": self.LOG_LEVEL,
+            "REQUIRED_METADATA_FIELDS": self.REQUIRED_METADATA_FIELDS,
+        }

@@ -86,12 +86,12 @@ docs = [
     },
 ]
 
+from main.main_config import MainConfig
+idx_settings = MainConfig().indexer
 
-settings = Settings()
-
-idx = ChromaIndexer(settings=settings)
+idx = ChromaIndexer(settings=idx_settings)
 for chun in ["token_chunking", "sliding_window_chunking", "paragraph_chunking", "sentence_chunking"]:
-    print(f"\n=================={chun}====================\n")
+    print(f"\n\n{"="*20}{chun}{"="*20}\n")
     res = idx.index_documents(docs, chunking_method=chun)
     print("Result:", res)
 

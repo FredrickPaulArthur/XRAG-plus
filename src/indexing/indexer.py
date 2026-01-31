@@ -30,9 +30,7 @@ logger = logging.getLogger("xr.indexer")
 logger.setLevel(logging.INFO)
 
 
-# -----------------------------
-# ChromaIndexer
-# -----------------------------
+
 class ChromaIndexer:
     def __init__(self, settings: Settings):
         """
@@ -44,20 +42,32 @@ class ChromaIndexer:
         self.settings = settings
         persist_directory = self.settings.CHROMA_PERSIST_DIRECTORY
         self.collection_prefix = self.settings.COLLECTION_PREFIX
-        self.lang_provider_map = self.settings.LANG_EMBEDDING_MAP
+        self.LANG_EMBEDDING_MAP = self.settings.LANG_EMBEDDING_MAP
         self.client = ChromaManager(persist_directory)
+        self._embedding_providers = {}  # key: (provider_name, lang, model_name)
 
-    def get_provider_for_lang(self, lang: str) -> EmbeddingProvider:
-        provider = self.lang_provider_map.get(lang)["provider"]
-        model_name = self.lang_provider_map.get(lang)["model"]
 
-        if provider == "sentence_transformers": provider_obj = SentenceTransformersProvider(model_name=model_name)
+    def get_provider_for_lang(self, lang, device="cuda"):
+        """
+        Return a cached provider instance for the language/provider/model combo.
+        Creates it lazily on first request.
+        """
+        provider = self.LANG_EMBEDDING_MAP.get(lang)["provider"]
+        model_name = self.LANG_EMBEDDING_MAP.get(lang)["model"]
+
+        # create provider once
+        if provider == "sentence_transformers":
+            key = (provider, lang, model_name)
+            if key in self._embedding_providers:
+                return self._embedding_providers[key]
+
+            from .embeddings import SentenceTransformersProvider
+            provider_obj = SentenceTransformersProvider(model_name=model_name, device=device, batch_size=self.settings.EMBEDDING_BATCH_SIZE)
         elif provider == "cohere":  provider_obj = CohereAIEmbeddingProvider(model=model_name)
         elif provider == "openai":  provider_obj = OpenAIEmbeddingProvider(model=model_name)
 
-        if provider_obj:    return provider_obj
-
-        raise ValueError(f"No embedding provider registered for language '{lang}', and no default provided.")
+        if provider =="sentence_transformers":    self._embedding_providers[key] = provider_obj
+        return provider_obj
 
 
     def _collection_name(self, language: str, source: str, provider: str, model_name: str, chunking_method) -> str:
@@ -103,8 +113,8 @@ class ChromaIndexer:
 
     # Deduplication
     @staticmethod
-    def _checksum(text: str) -> str:
-        return hashlib.sha1(text.encode("utf8")).hexdigest()
+    def _checksum(chunk_text: str) -> str:
+        return hashlib.sha1(chunk_text.encode("utf8")).hexdigest()
 
 
     # Main Indexing Method
@@ -115,6 +125,7 @@ class ChromaIndexer:
         text_field: str = "text",
         id_field: str = "id",
         title_field: str = "title",
+        date_field: str = "date_publish",       # In wiki documents
         chunking_method = "context_aware_chunking"
     ) -> Dict[str, Any]:
         """
@@ -141,7 +152,7 @@ class ChromaIndexer:
         for (lang, src), group_docs in groups.items():
             print(f"Document language and source : ({lang}, {src})")
 
-            emb_provider_obj = self.get_provider_for_lang(lang)
+            emb_provider_obj = self.get_provider_for_lang(lang, "cuda")
             col = self.ensure_collection(lang, src, emb_provider_obj, chunking_method)
 
             # prepare all chunks for this group
@@ -150,10 +161,13 @@ class ChromaIndexer:
             chunk_ids = []
 
             for doc in group_docs:
-                doc_id = str(doc.get(id_field, hashlib.sha1((doc.get(text_field, "") + str(time.time())).encode()).hexdigest()))
+                # doc_id = str(doc.get(id_field, hashlib.sha1((doc.get(text_field, "") + str(time.time())).encode()).hexdigest()))
+                raw_id = f"{doc.get(text_field, '')}|{doc.get('language', '')}|{doc.get('chunk_id', '')}"
+                doc_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
                 text = doc.get(text_field, "")
                 title = doc.get(title_field, "") or ""
                 url = doc.get("url", "")
+                date = doc.get("date_publish", "")
 
                 if chunking_method == "context_aware_chunking":
                     chunks = context_aware_chunking(
@@ -169,8 +183,7 @@ class ChromaIndexer:
                     import spacy
                     token_chunker = TokenChunker(
                         tokenizer=spacy.load("en_core_web_sm", disable=["parser", "ner", "tagger"]),
-                        chunk_size=10,
-                        stride=1
+                        chunk_size=10, stride=1
                     )
                     chunks = token_chunker.chunk(doc)
 
@@ -194,6 +207,7 @@ class ChromaIndexer:
                         "language": lang,
                         "source": src,
                         "checksum": checksum,
+                        "date": date,
                     }
                     meta.update(meta_partial)
 
@@ -230,11 +244,11 @@ class ChromaIndexer:
                 if not batch_texts:
                     continue
 
-                logger.info(f"Embedding batch (lang={lang}, source={src}) size={batch_texts}")
+                logger.info(f"\n\nEmbedding batch size = {len(batch_texts)} [Language={lang}, Source={src}]")
+                logger.info(f"Batch Sample: {batch_texts[:2]}")
 
                 embeddings = emb_provider_obj.embed_documents(batch_texts)
-
-                col.add(        # Add/upsert to collection
+                col.add(
                     documents=batch_texts,
                     metadatas=batch_meta,
                     ids=batch_ids,
@@ -253,6 +267,6 @@ class ChromaIndexer:
         model_name = getattr(emb_provider_obj, "model_name", None) or getattr(emb_provider_obj, "model", None)
 
         name = self._collection_name(language, source, provider_name, model_name)
-        logger.info("\n⚠️ Deleting collection %s", name)
+        logger.info("\n🔴 Deleting collection %s", name)
 
         return self.client.delete_collection(name)
