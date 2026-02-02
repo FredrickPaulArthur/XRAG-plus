@@ -14,15 +14,16 @@ from typing import Dict, Any
 
 @dataclass
 class Settings:
-    CROSS_ENCODER_MODEL_PROVIDER = "sentence_transformers"
-    CROSS_ENCODER_MODEL= "jinaai/jina-reranker-v2-base-multilingual"    # cross-encoder/ms-marco-MiniLM-L-6-v2
-    MONO_ENCODER_MODEL_PROVIDER = "sentence_transformers"
-    MONO_ENCODER_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    CROSS_ENCODER_MODEL_PROVIDER: str = "sentence_transformers"
+    CROSS_ENCODER_MODEL: str = "jinaai/jina-reranker-v2-base-multilingual"    # cross-encoder/ms-marco-MiniLM-L-6-v2
+
+    MONO_ENCODER_MODEL_PROVIDER: str = "sentence_transformers"
+    MONO_ENCODER_MODEL: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 
     JINA_RERANKER_MODEL: str = "jinaai/jina-reranker-v3"
-    JINA_LISTWISE_MAX_DOCS: int = 4   # adjust by memory/throughput
+    JINA_LISTWISE_MAX_DOCS: int = 4   # Reranking Batch size for JinaAI Model, adjust by memory/throughput
 
-    BATCH_SIZE: int = 64    # Batch size for encoding/prediction
+    BATCH_SIZE: int = 64    # Reranking Batch size for encoding/prediction for Cross Encoder
 
     TOP_K: int = 10    # Default top-k to return
 
@@ -40,6 +41,4 @@ class Settings:
             "BATCH_SIZE": self.BATCH_SIZE,
             "TOP_K": self.TOP_K,
             "NORMALIZE_SCORES": self.NORMALIZE_SCORES,
-            "VERBOSE": self.VERBOSE,
-            "LANG_RERANKER_MAP": self.LANG_RERANKER_MAP
         }

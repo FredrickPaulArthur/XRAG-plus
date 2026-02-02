@@ -34,7 +34,7 @@ texts = [
 ]
 
 
-reranker = CrossEncoder("jinaai/jina-reranker-v2-base-multilingual", trust_remote_code=True)
+reranker = CrossEncoder("jinaai/jina-reranker-v2-base-multilingual", trust_remote_code=True, device="cuda")
 
 query = "Follow the white rabbit."
 pairs = [(query, doc) for doc in texts]
@@ -218,7 +218,7 @@ query = "Fact about Coffee and Tea"
 
 # To implement - Rerank the retrieved documents
 from .reranker import Reranker
-reranker = Reranker(_use_cross=False)
+reranker = Reranker(_use_cross=True)
 top_ranked = reranker.rerank(query, formatted_docs, top_k=5)
 
 print(f"\nTop multilingual Re-ranked results for query - {query}\n")
@@ -238,7 +238,7 @@ for reranked_doc in top_ranked:
 
 
 # if you want to use Jina reranker:
-r = Reranker(_use_cross=False, use_jina=True)
+r = Reranker(use_jina=True)
 top = r.rerank(query, formatted_docs, top_k=5)
 
 print(f"\nTop multilingual Re-ranked results for query - {query}\n")

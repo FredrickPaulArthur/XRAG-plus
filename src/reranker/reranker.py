@@ -52,7 +52,7 @@ class Reranker:
     except Exception:
         _HAS_TRANSFORMERS = False
 
-    def __init__(self, _use_cross, use_jina=False) -> None:
+    def __init__(self, _use_cross=False, use_jina=False) -> None:
         self._use_cross = _use_cross
         self.cross_encoder = None
         self.mono_encoder = None
@@ -72,18 +72,19 @@ class Reranker:
         if self._HAS_CROSS_ENCODER and self._use_cross:
             try:
                 logger.info("Loading CrossEncoder: %s", self.settings.CROSS_ENCODER_MODEL)
-                self.cross_encoder = self.CrossEncoder(model_name_or_path=self.settings.CROSS_ENCODER_MODEL)
+                self.cross_encoder = self.CrossEncoder(model_name_or_path=self.settings.CROSS_ENCODER_MODEL, trust_remote_code=True, device="cuda")
                 logger.info("Loaded CrossEncoder successfully.")
             except Exception as e:
                 logger.warning("Failed to load CrossEncoder (%s). Falling back. Error: %s",
                             self.settings.CROSS_ENCODER_MODEL, e)
                 self.cross_encoder = None
                 self._use_cross = False
-        else:
-            logger.info("CrossEncoder not available or disabled; using embedding fallback or Jina as configured.")
+        elif self._use_cross is False:
+            logger.info("CrossEncoder has been disabled; using embedding fallback or Jina as configured.")
 
         # Jina listwise reranker (special handling)
         if self._use_jina:
+            logger.info("JinaAI has been enabled for Reranking.")
             if not self._HAS_TRANSFORMERS:
                 raise RuntimeError("transformers is required to load Jina reranker via trust_remote_code=True")
             try:
