@@ -20,7 +20,7 @@ class Retriever:
         self.chroma_manager = chroma_manager or ChromaManager(persist_directory=self.settings.CHROMA_PERSIST_DIR)
         self.language = language
 
-        lang_map = self.settings.LANG_EMBEDDING_MAP.get(self.language, None)
+        lang_map = self.settings.LANG_EMBEDDING_MAP[self.language]  
         self.semantic_provider = None
         self.semantic_model_name = None
         if isinstance(lang_map, dict):
@@ -30,6 +30,7 @@ class Retriever:
             # fallback to defaults
             self.semantic_provider = getattr(self.settings, "DEFAULT_EMBEDDING_PROVIDER", None)
             self.semantic_model_name = getattr(self.settings, "DEFAULT_EMBEDDING_MODEL", None)
+
 
     def _merge_and_rank(self, results_list: List[Dict], prefer_source: Optional[str] = None,
                         boost: float = 0.18, top_k: int = 5) -> Dict:
@@ -140,7 +141,7 @@ class Retriever:
         # Embedding for the query
         if self.semantic_provider == "sentence_transformers":
             from src.indexing.embeddings import SentenceTransformersProvider
-            q_embs = SentenceTransformersProvider(self.semantic_model_name).embed_documents([query])
+            q_embs = SentenceTransformersProvider(self.semantic_model_name, device="cuda").embed_documents([query])
         elif self.semantic_provider == "cohere":
             from src.indexing.embeddings import CohereAIEmbeddingProvider
             q_embs = CohereAIEmbeddingProvider(self.semantic_model_name).embed_documents([query])
@@ -345,8 +346,7 @@ class Retriever:
         Wrapper entrypoint. method can be: "semantic" (default), "keyword", or "hybrid".
         Extra kwargs are forwarded to the specific method (e.g., alpha for hybrid).
         """
-
-        collection_startswith = f"xragg_collection__{self.language}"
+        collection_startswith = f"xrag_collection__{self.language}"
 
         method = (method or "semantic").lower()
         if method == "semantic":
@@ -360,47 +360,43 @@ class Retriever:
             raise ValueError(f"Unknown retrieval method: {method}. Supported: semantic, keyword, hybrid.")
 
 
-    # def retrieve_lang_specific(self, query: str, k: int = 5, language: Optional[str] = None, method: str = "hybrid", 
-    #         where: Optional[Dict] = None, prefer_source: Optional[str] = None, boost: float = 0.18, 
-    #         alpha: float = 0.7, top_k: Optional[int] = None) -> Dict:
-    #     """
-    #     Search across collections that match the specified language.
-    #     - language: e.g. "en", "de". If None, uses self.language.
-    #     - method: "semantic" | "keyword" | "hybrid"
-    #     - prefer_source: optional metadata source to boost (e.g. 'wiki')
-    #     - alpha: hybrid weight forwarded to hybrid retrieval
-    #     - top_k: final number of merged results to return (defaults to k)
-    #     """
-    #     lang = language
-    #     collection_prefix = f"xragg_collection__{lang}"
-    #     try:
-    #         collections = self.chroma_manager.list_collections(name_startswith=collection_prefix)
-    #     except Exception:   # fallback: list everything
-    #         collections = [c for c in self.chroma_manager.list_collections() if c.startswith(collection_prefix)]
+    def retrieve_lang_specific(self, query: str, k: int = 5, language: Optional[str] = None, method: str = "hybrid", 
+            where: Optional[Dict] = None, prefer_source: Optional[str] = None, boost: float = 0.18, 
+            alpha: float = 0.7, top_k: Optional[int] = None) -> Dict:
+        """
+        Search across collections that match the specified language. Independent of the Retriever's language.
+        - language: e.g. "en", "de". If None, uses self.language.
+        - method: "semantic" | "keyword" | "hybrid"
+        - prefer_source: optional metadata source to boost (e.g. 'wiki')
+        - alpha: hybrid weight forwarded to hybrid retrieval
+        - top_k: final number of merged results to return (defaults to k)
+        """
+        collection_prefix = f"xrag_collection__{language}"
+        collections = [c for c in self.chroma_manager.list_collections() if c.startswith(collection_prefix) and self.semantic_model_name in c]
 
-    #     if not collections:
-    #         return {"ids": [], "distances": [], "metadatas": [], "documents": []}
+        if not collections:
+            return {"ids": [], "distances": [], "metadatas": [], "documents": []}
 
-    #     results_pool = []
-    #     per_col_k = max(3, k)       # pick per-collection retrieval k (small) to reduce API load
+        results_pool = []
+        per_col_k = max(3, k)       # pick per-collection retrieval k (small) to reduce API load
 
-    #     for coll in collections:
-    #         try:
-    #             if method == "semantic":
-    #                 r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
-    #             elif method == "keyword":
-    #                 r = self.retrieve_keyword(coll, query, k=per_col_k, where=where)
-    #             elif method == "hybrid":
-    #                 r = self.retrieve_hybrid(coll, query, k=per_col_k, where=where, alpha=alpha)
-    #             else:
-    #                 r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
-    #         except Exception as e:
-    #             logger.warning("Retrieval failed for collection %s: %s", coll, e)
-    #             continue
-    #         results_pool.append(r)
+        for coll in collections:
+            try:
+                if method == "semantic":
+                    r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
+                elif method == "keyword":
+                    r = self.retrieve_keyword(coll, query, k=per_col_k, where=where)
+                elif method == "hybrid":
+                    r = self.retrieve_hybrid(coll, query, k=per_col_k, where=where, alpha=alpha)
+                else:
+                    r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
+            except Exception as e:
+                logger.warning("Retrieval failed for collection %s: %s", coll, e)
+                continue
+            results_pool.append(r)
 
-    #     final_top_k = top_k or k
-    #     return self._merge_and_rank(results_pool, prefer_source=prefer_source, boost=boost, top_k=final_top_k)
+        final_top_k = top_k or k
+        return self._merge_and_rank(results_pool, prefer_source=prefer_source, boost=boost, top_k=final_top_k)
 
 
     def retrieve_embedding_specific(self, query: str, k: int = 5, embedding: Optional[str] = None, method: str = "hybrid", 
@@ -422,7 +418,7 @@ class Retriever:
             candidate_colls = [c for c in all_colls if embedding in c]
         else:
             # if no embedding provided, default to all language-specific collections
-            candidate_colls = [c for c in all_colls if c.startswith(f"xragg_collection__{self.language}")]
+            candidate_colls = [c for c in all_colls if c.startswith(f"xrag_collection__{self.language}")]
 
         if not candidate_colls:
             return {"ids": [], "distances": [], "metadatas": [], "documents": []}
@@ -430,18 +426,14 @@ class Retriever:
         results_pool = []
         per_col_k = max(3, k)
         for coll in candidate_colls:
-            try:
-                if method == "semantic":
-                    r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
-                elif method == "keyword":
-                    r = self.retrieve_keyword(coll, query, k=per_col_k, where=where)
-                elif method == "hybrid":
-                    r = self.retrieve_hybrid(coll, query, k=per_col_k, where=where, alpha=alpha)
-                else:
-                    r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
-            except Exception as e:
-                logger.warning("Retrieval failed for collection %s: %s", coll, e)
-                continue
+            if method == "semantic":
+                r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
+            elif method == "keyword":
+                r = self.retrieve_keyword(coll, query, k=per_col_k, where=where)
+            elif method == "hybrid":
+                r = self.retrieve_hybrid(coll, query, k=per_col_k, where=where, alpha=alpha)
+            else:
+                r = self.retrieve_semantic(coll, query, k=per_col_k, where=where)
             results_pool.append(r)
 
         final_top_k = top_k or k
