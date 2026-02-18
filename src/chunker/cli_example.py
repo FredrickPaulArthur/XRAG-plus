@@ -60,22 +60,22 @@ if __name__ == "__main__":
         stride=1
     )
     token_chunks = token_chunker.chunk(DOCUMENT)
-    print_chunks("TokenChunker", token_chunks)
+    print_chunks("\nTokenChunker", token_chunks)
 
     # Sliding window chunking
     sliding_chunker = SlidingWindowChunker(chunk_size=12, overlap=4)
     sliding_chunks = sliding_chunker.chunk(DOCUMENT)
-    print_chunks("SlidingWindowChunker", sliding_chunks)
+    print_chunks("\nSlidingWindowChunker", sliding_chunks)
 
     # Sentence-based chunking
     sentence_chunker = SentenceChunker(min_tokens=5)
     sentence_chunks = sentence_chunker.chunk(DOCUMENT)
-    print_chunks("SentenceChunker", sentence_chunks)
+    print_chunks("\nSentenceChunker", sentence_chunks)
 
     # Paragraph-based chunking
     paragraph_chunker = ParagraphChunker(min_chars=200)
     paragraph_chunks = paragraph_chunker.chunk(DOCUMENT)
-    print_chunks("ParagraphChunker", paragraph_chunks)
+    print_chunks("\nParagraphChunker", paragraph_chunks)
 
     # Context-aware chunking
     max_chars = 900

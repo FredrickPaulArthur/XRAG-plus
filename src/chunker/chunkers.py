@@ -130,10 +130,9 @@ class TokenChunker(BaseChunker):
             return tokens, spans
 
     def chunk(self, doc: Dict[str, Any]) -> List[Dict[str, Any]]:
-        doc_id = doc.get("doc_id") or str(uuid.uuid4())
+        doc_id = doc.get("doc_id")      # or str(uuid.uuid4())  # to make it repeatable
         text = doc.get("text", "")
         # meta = doc.get("meta", {})
-
         lang = doc.get("language")
 
         tokens, spans = self._tokenize(text)
@@ -144,7 +143,14 @@ class TokenChunker(BaseChunker):
         chunks: List[Dict[str, Any]] = []
         metadatas = []
         index = 0
+        idx_chunk_id = 0
         while index < total:
+            chunk_id = make_chunk_id(doc_id, idx_chunk_id, lang)
+            # '''
+            # TODO (optional):
+            #     if chunk_id exists in the Database_name, then should skip this chunk and proceed to.
+            #     (assuming the chunk_id is reproducible, to continue indexing the Wiki/CCNews Dataset where it stopped.)
+            # '''
             end = min(index + self.chunk_size, total)
             if end - index < self.min_tokens and end < total:
                 end = min(index + max(self.min_tokens, self.chunk_size), total)
@@ -162,13 +168,14 @@ class TokenChunker(BaseChunker):
             chunks.append(chunk_text)
             metadatas.append({
                 "doc_id": doc_id,
-                "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
+                "chunk_id": chunk_id,
                 "start_char": start_char,
                 "end_char": end_char,
                 "token_count": len(chunk_tokens),
                 "chunk_type": self.chunk_type,
                 "language": lang,
             })
+            idx_chunk_id +=1
 
             if self.stride <= 0:
                 index = end
@@ -295,7 +302,7 @@ class SentenceChunker(BaseChunker):
 
             metadatas.append({
                 "doc_id": doc_id,
-                "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
+                "chunk_id": make_chunk_id(doc_id, merged_idx, lang),
                 "start_char": start,
                 "end_char": end,
                 "token_count": token_count,
@@ -371,7 +378,7 @@ class ParagraphChunker(BaseChunker):
             chunks.append(curr)
             metadatas.append({
                 "doc_id": doc_id,
-                "chunk_id": make_chunk_id(doc_id, len(chunks), lang),
+                "chunk_id": make_chunk_id(doc_id, idx, lang),
                 "start_char": start,
                 "end_char": end,
                 "token_count": len(whitespace_tokens(curr)),
