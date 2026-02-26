@@ -69,15 +69,15 @@ class Settings:
 
 
     # Max tokens per chunk (approx).
-    CHUNK_MAX_CHARS: int = 1000
-    CHUNK_OVERLAP_SENTENCES: int = 2
+    CHUNK_MAX_CHARS: int = 300
+    CHUNK_OVERLAP_SENTENCES: int = 1
 
     # -------------------------
     # Indexing runtime parameters
     # -------------------------
     # Textual items to send to the embedding provider per batch, for OPENAI API safe.
     # How many chunks to add/upsert to Chroma in a single operation (should be tuned with memory)
-    EMBEDDING_BATCH_SIZE: int = 64
+    EMBEDDING_BATCH_SIZE: int = 8
 
     DEDUP_ENABLED: bool = True  # Attempts deduplication before indexing (true recommended)
 

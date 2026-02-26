@@ -15,12 +15,11 @@ Dependencies:
 
 from typing import List, Dict, Any, Optional, Tuple
 import chromadb
-from chromadb.config import Settings
 import hashlib
 import time
 import math
 
-from src.chunker.chunkers import context_aware_chunking, llm_based_chunking, ParagraphChunker, SentenceChunker, SlidingWindowChunker, TokenChunker
+from src.chunker.chunkers import context_aware_chunking, ParagraphChunker, SentenceChunker, SlidingWindowChunker, TokenChunker
 from src.indexing.embeddings import EmbeddingProvider, SentenceTransformersProvider, CohereAIEmbeddingProvider, OpenAIEmbeddingProvider
 import logging
 from .config import Settings
@@ -60,9 +59,8 @@ class ChromaIndexer:
             key = (provider, lang, model_name)
             if key in self._embedding_providers:
                 return self._embedding_providers[key]
-
-            from .embeddings import SentenceTransformersProvider
             provider_obj = SentenceTransformersProvider(model_name=model_name, device=device, batch_size=self.settings.EMBEDDING_BATCH_SIZE)
+
         elif provider == "cohere":  provider_obj = CohereAIEmbeddingProvider(model=model_name)
         elif provider == "openai":  provider_obj = OpenAIEmbeddingProvider(model=model_name)
 
@@ -113,95 +111,223 @@ class ChromaIndexer:
 
     # Deduplication
     @staticmethod
-    def _checksum(chunk_text: str) -> str:
-        return hashlib.sha1(chunk_text.encode("utf8")).hexdigest()
+    def _checksum(string: str) -> str:
+        return hashlib.sha1(string.encode("utf8")).hexdigest()
 
 
-    # Main Indexing Method
     def index_documents(
-        self, docs: List[Dict[str, Any]], *,
+        self,
+        docs: List[Dict[str, Any]], language: Optional[str] = None,
         language_field: str = "language",
         source_field: str = "source",
         text_field: str = "text",
         id_field: str = "id",
         title_field: str = "title",
-        date_field: str = "date_publish",       # In wiki documents
-        chunking_method = "context_aware_chunking"
+        date_field: str = "date_publish",
+        chunking_method: str = "context_aware_chunking",
+        rebuild: bool = False,
+        persist: bool = True,
+        upsert_on_conflict: bool = True,
     ) -> Dict[str, Any]:
         """
-        Indexing a list of documents. Each doc must contain:
-            - id
-            - text
-            - language
-            - source (e.g. 'wiki', 'ccnews')
+        Streaming, memory-safe indexing into Chroma.
 
-        Returns summary dict with counts.
+        Key points:
+        - Streams documents group-by (language, source).
+        - Chunks each document, computes checksum, filters duplicates (using a single existing_checksums set per collection).
+        - Embeds small batches (self.settings.EMBEDDING_BATCH_SIZE) and upserts them immediately.
+        - Frees memory after each batch (del + gc.collect()).
+        - Optionally deletes collection when `rebuild=True`.
         """
+
+        import gc
+        import psutil
+        from chromadb.errors import DuplicateIDError
+
         indexed = 0
         skipped = 0
         upserted_ids = []
 
-        # Group by language+source to create separate collection per group
+        # Group by (language, source)
         groups = {}
         for d in docs:
-            lang = d.get(language_field)
-            src = d.get(source_field)
-            key = (lang, src)
-            groups.setdefault(key, []).append(d)
+            lang = d.get(language_field, "") or language
+            src = d.get(source_field, "") or ""
+            groups.setdefault((lang, src), []).append(d)
+
+        batch_size = getattr(self.settings, "EMBEDDING_BATCH_SIZE", 8) or 8
+        chunk_max_chars = getattr(self.settings, "CHUNK_MAX_CHARS", 500)
+        overlap_sentences = getattr(self.settings, "CHUNK_OVERLAP_SENTENCES", 1)
+
+        # helper to log memory
+        def _log_mem(stage: str):
+            p = psutil.Process()
+            mem_mb = p.memory_info().rss / (1024 * 1024)
+            logger.info(f"[MEM] {stage}: {mem_mb:.1f} MB")
 
         for (lang, src), group_docs in groups.items():
-            print(f"Document language and source : ({lang}, {src})")
+            logger.info(f"\nIndexing group: language={lang}, source={src} (#docs={len(group_docs)})")
 
-            emb_provider_obj = self.get_provider_for_lang(lang, "cuda")
-            col = self.ensure_collection(lang, src, emb_provider_obj, chunking_method)
+            # get embedding provider for language (try cuda then cpu)
+            device = "cuda"
+            try:
+                # check if cuda actually available on provider side — providers may ignore this arg
+                provider = self.get_provider_for_lang(lang, device=device)
+            except Exception:
+                device = "cpu"
+                provider = self.get_provider_for_lang(lang, device=device)
 
-            # prepare all chunks for this group
-            chunk_texts = []
-            chunk_metadatas = []
-            chunk_ids = []
+            # ensure collection exists
+            col = self.ensure_collection(lang, src, provider, chunking_method)
 
-            for doc in group_docs:
-                # doc_id = str(doc.get(id_field, hashlib.sha1((doc.get(text_field, "") + str(time.time())).encode()).hexdigest()))
-                raw_id = f"{doc.get(text_field, '')}|{doc.get('language', '')}|{doc.get('chunk_id', '')}"
-                doc_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
-                text = doc.get(text_field, "")
-                title = doc.get(title_field, "") or ""
-                url = doc.get("url", "")
-                date = doc.get("date_publish", "")
+            # handle rebuild: delete collection then recreate
+            if rebuild:
+                try:
+                    name = col.name
+                    logger.info(f"Rebuild requested: deleting collection {name}")
+                    try:
+                        self.client.delete_collection(name)
+                    except Exception:
+                        # older chroma clients might use client.delete_collection
+                        try:
+                            self.client.delete_collection(name)
+                        except Exception:
+                            pass
+                    col = self.ensure_collection(lang, src, provider, chunking_method)
+                except Exception as e:
+                    logger.warning(f"Could not delete/recreate collection: {e}")
 
-                if chunking_method == "context_aware_chunking":
-                    chunks = context_aware_chunking(
-                        doc, max_chars=self.settings.CHUNK_MAX_CHARS,
-                        overlap_sentences=self.settings.CHUNK_OVERLAP_SENTENCES,
-                    )
+            # Fetch existing checksums once (fast de-dupe)
+            existing_checksums = set()
 
-                elif chunking_method == "paragraph_chunking":
-                    paragraph_chunker = ParagraphChunker(min_chars=200)
-                    chunks = paragraph_chunker.chunk(doc)
+            # include metadatas only to reduce bandwidth
+            existing = col.get(include=["metadatas"])
+            metadatas = existing.get("metadatas", []) if isinstance(existing, dict) else []
+            # Some clients return nested lists: normalize
+            if metadatas and isinstance(metadatas[0], list):
+                flat_mds = metadatas[0]
+            else:
+                flat_mds = metadatas
+            for m in flat_mds:
+                if isinstance(m, dict) and "checksum" in m:
+                    existing_checksums.add(m["checksum"])
 
+            logger.info(f"Existing checksums loaded: {len(existing_checksums)}")
+            _log_mem("after-load-checksums")
+
+            # streaming buffers
+            batch_texts = []
+            batch_metadatas = []
+            batch_ids = []
+            batch_checksums = []
+
+            def _flush_batch():
+                nonlocal indexed, skipped, upserted_ids, batch_texts, batch_metadatas, batch_ids, batch_checksums
+                if not batch_texts:
+                    return
+                try:
+                    # embed
+                    logger.info(f"Embedding batch size = {len(batch_texts)} [Language={lang}, Source={src}]")
+                    embeddings = provider.embed_documents(batch_texts)
+
+                    # use upsert if available (idempotent and avoids duplicate id errors)
+                    if hasattr(col, "upsert"):
+                        col.upsert(documents=batch_texts, metadatas=batch_metadatas, ids=batch_ids, embeddings=embeddings)
+                    else:
+                        try:
+                            col.add(documents=batch_texts, metadatas=batch_metadatas, ids=batch_ids, embeddings=embeddings)
+                        except DuplicateIDError:
+                            # fallback: attempt add per-item, skipping duplicates
+                            for i in range(len(batch_texts)):
+                                try:
+                                    col.add(documents=[batch_texts[i]], metadatas=[batch_metadatas[i]], ids=[batch_ids[i]], embeddings=[embeddings[i]])
+                                except Exception:
+                                    # skip duplicates or failures
+                                    continue
+
+                    # update counters & checksum set
+                    indexed += len(batch_texts)
+                    upserted_ids.extend(batch_ids)
+                    existing_checksums.update(batch_checksums)
+
+                    logger.info(f"Indexed batch: +{len(batch_texts)} (total indexed={indexed})")
+                except Exception as e:
+                    logger.warning(f"Failed to upsert/add batch to Chroma: {e}")
+                finally:
+                    # free memory
+                    del batch_texts, batch_metadatas, batch_ids, batch_checksums
+                    gc.collect()
+                    # recreate empty buffers
+                    batch_texts = []
+                    batch_metadatas = []
+                    batch_ids = []
+                    batch_checksums = []
+                    _log_mem("after-flush")
+
+            # choose chunking method
+            try:
+                if chunking_method == "paragraph_chunking":
+                    chunker = ParagraphChunker(min_chars=200)
                 elif chunking_method == "token_chunking":
-                    import spacy
-                    token_chunker = TokenChunker(
-                        tokenizer=spacy.load("en_core_web_sm", disable=["parser", "ner", "tagger"]),
-                        chunk_size=10, stride=1
-                    )
-                    chunks = token_chunker.chunk(doc)
-
+                    chunker = TokenChunker(chunk_size=512, stride=128)
                 elif chunking_method == "sliding_window_chunking":
-                    sliding_chunker = SlidingWindowChunker(chunk_size=12, overlap=4)
-                    chunks = sliding_chunker.chunk(doc)
-
+                    chunker = SlidingWindowChunker(chunk_size=512, overlap=128)
                 elif chunking_method == "sentence_chunking":
-                    sentence_chunker = SentenceChunker(min_tokens=5)
-                    chunks = sentence_chunker.chunk(doc)
+                    chunker = SentenceChunker(min_tokens=5)
+
+            except Exception as e:
+                logger.warning(f"Chunking failed for doc {doc_idx} (lang={lang}): {e}")
+                # fallback single chunk
+                chunks = [(raw_text, {})]
+
+            # iterate docs and create chunks
+            for doc_idx, doc in enumerate(group_docs):
+                raw_text = doc.get(text_field, "") or doc.get("context", "")
+                if not raw_text:
+                    skipped += 1
+                    continue
+
+                title = doc.get(title_field, "")
+                url = doc.get("url", "")
+                date = doc.get(date_field, "")
+
+                # deterministic doc_id
+                raw_id = f"{raw_text[:30]}|{lang}|{doc.get(id_field, '')}"
+                doc_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
+
+                # choose chunking method
+                try:
+                    if chunking_method == "context_aware_chunking":
+                        chunks = context_aware_chunking(
+                            doc,
+                            max_chars=self.settings.CHUNK_MAX_CHARS,
+                            overlap_sentences=self.settings.CHUNK_OVERLAP_SENTENCES,
+                        )
+                    elif chunking_method == "paragraph_chunking":
+                        chunks = chunker.chunk(doc)
+                    elif chunking_method == "token_chunking":
+                        chunks = chunker.chunk(doc)
+                    elif chunking_method == "sliding_window_chunking":
+                        chunks = chunker.chunk(doc)
+                    elif chunking_method == "sentence_chunking":
+                        chunks = chunker.chunk(doc)
+
+                except Exception as e:
+                    logger.warning(f"Chunking failed for doc {doc_idx} (lang={lang}): {e}")
+                    # fallback single chunk
+                    chunks = [(raw_text, {})]
 
 
-                for idx, (chunk_text, meta_partial) in enumerate(chunks):
+                for cidx, (chunk_text, meta_partial) in enumerate(chunks):
                     checksum = self._checksum(chunk_text)
-                    uid = f"{doc_id}__chunk_{idx}__{checksum[:12]}"
+                    if checksum in existing_checksums:
+                        skipped += 1
+                        continue
+
+                    uid = f"{doc_id}__chunk_{cidx}__{checksum[:12]}"
                     meta = {
                         "doc_id": doc_id,
-                        "chunk_index": idx,
+                        "chunk_index": cidx,
                         "title": title,
                         "url": url,
                         "language": lang,
@@ -209,55 +335,40 @@ class ChromaIndexer:
                         "checksum": checksum,
                         "date": date,
                     }
-                    meta.update(meta_partial)
+                    meta.update(meta_partial or {})
 
-                    chunk_texts.append(chunk_text)
-                    chunk_metadatas.append(meta)
-                    chunk_ids.append(uid)
+                    # append to batch
+                    batch_texts.append(chunk_text)
+                    batch_metadatas.append(meta)
+                    batch_ids.append(uid)
+                    batch_checksums.append(checksum)
 
-            if self.settings.DEDUP_ENABLED and len(chunk_metadatas) > 0:
-                existing_checksums = set()
+                    # flush if batch full
+                    if len(batch_texts) >= batch_size:
+                        _flush_batch()
 
-                existing = col.get(include=["metadatas"])
-                for m in existing.get("metadatas", []):
-                    if isinstance(m, dict) and "checksum" in m:
-                        existing_checksums.add(m["checksum"])
+                # after finishing doc, flush leftover small batch if it grew big (optional optimization)
+                # but we keep it to EMBEDDING_BATCH_SIZE threshold
 
-                # Filtering out duplicates
-                filtered_texts, filtered_metadatas, filtered_ids = [], [], []
-                for t, m, i_ in zip(chunk_texts, chunk_metadatas, chunk_ids):
-                    if m.get("checksum") in existing_checksums:
-                        skipped += 1
-                        continue
-                    filtered_texts.append(t)
-                    filtered_metadatas.append(m)
-                    filtered_ids.append(i_)
-                chunk_texts, chunk_metadatas, chunk_ids = filtered_texts, filtered_metadatas, filtered_ids
+            # flush remaining for this group
+            _flush_batch()
 
-            # Embedding and adding in batches
-            for i in range(0, len(chunk_texts), self.settings.EMBEDDING_BATCH_SIZE):
-                index = i + self.settings.EMBEDDING_BATCH_SIZE
-                batch_texts = chunk_texts[i:index]
-                batch_meta = chunk_metadatas[i:index]
-                batch_ids = chunk_ids[i:index]
+            # persist client if requested (helps durability)
+            if persist:
+                try:
+                    if hasattr(self.client, "persist"):
+                        try:
+                            self.client.persist()
+                        except Exception:
+                            # some versions accept client.persist() differently
+                            pass
+                    logger.info("Chroma client persisted (if supported).")
+                except Exception as e:
+                    logger.warning(f"Failed to persist Chroma client: {e}")
 
-                if not batch_texts:
-                    continue
+        summary = {"indexed_chunks": int(indexed), "skipped": int(skipped), "upserted_ids_count": len(upserted_ids)}
+        return summary
 
-                logger.info(f"\n\nEmbedding batch size = {len(batch_texts)} [Language={lang}, Source={src}]")
-                logger.info(f"Batch Sample: {batch_texts[:2]}")
-
-                embeddings = emb_provider_obj.embed_documents(batch_texts)
-                col.add(
-                    documents=batch_texts,
-                    metadatas=batch_meta,
-                    ids=batch_ids,
-                    embeddings=embeddings,
-                )
-                indexed += len(batch_texts)
-                upserted_ids.extend(batch_ids)
-
-        return {"indexed_chunks": indexed, "skipped": skipped, "upserted_ids_count": len(upserted_ids)}
 
     def list_collections(self) -> List[str]:
         return [c.name for c in self.client.list_collections()]
